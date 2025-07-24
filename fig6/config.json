@@ -1,0 +1,84 @@
+{
+    "seed": 42,
+    "cor_type": "spearman",
+    "split_by": "edge",
+    "test_size": 0.5,
+    "ml_type": "xgboost",
+    "filter_before_prediction": true,
+    "min_feature_count": 1,
+    "min_sample_count": 15,
+    "dataset_name": "aml",
+    "data_files": [
+        {
+            "name": "BeatAMl-T",
+            "type": "rna",
+            "path": "BeatAMl-T.tsv"
+        },
+        {
+            "name": "Blood2022-P-T",
+            "type": "protein",
+            "path": "Blood2022-P-T.tsv"
+        },
+        {
+            "name": "CCLE-P-T",
+            "type": "protein",
+            "path": "CCLE-P-T.tsv"
+        },
+        {
+            "name": "CCLE-T",
+            "type": "rna",
+            "path": "CCLE_UQ_log2-T.tsv"
+        },
+        {
+            "name": "ClinseqAML-T",
+            "type": "rna",
+            "path": "ClinseqAML-T.tsv"
+        },
+        {
+            "name": "CPTAC-AML-P-T",
+            "type": "protein",
+            "path": "CPTAC-AML-P-T.tsv"
+        },
+        {
+            "name": "CPTAC-AML-T",
+            "type": "rna",
+            "path": "CPTAC-AML-T.tsv"
+        },
+        {
+            "name": "TCGA_2013-T",
+            "type": "rna",
+            "path": "TCGA_2013_UQ_log2-T.tsv"
+        },
+        {
+            "name": "target-C",
+            "type": "rna",
+            "path": "target_UQ_log2-C.tsv"
+        },
+        {
+            "name": "target-N",
+            "type": "rna",
+            "path": "target_UQ_log2-N.tsv"
+        },
+        {
+            "name": "target-T",
+            "type": "rna",
+            "path": "target_UQ_log2-T.tsv"
+        }
+    ],
+    "rp_pairs": [
+        {
+            "name": "CPTAC-AML",
+            "rna": "CPTAC-AML-T",
+            "protein": "CPTAC-AML-P-T"
+        }
+    ],
+    "filter_after_prediction": true,
+    "filter_criterion": "max",
+    "filter_threshold": 0.95,
+    "filter_blacklist": true,
+    "n_jobs": 40,
+    "n_chunks": 4,
+    "max_num_edges": 250000,
+    "step_size": 100,
+    "lr_cutoff": 50
+}
