@@ -1,0 +1,711 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+## RNA and Protein data input
+
+```{r }
+suppressMessages(library(dplyr))
+
+use_imputed = TRUE
+
+
+load("D:/Projects/CPTAC/AML/AML_Data/Figures/aml_rdata/meta.RData")
+load("D:/Projects/CPTAC/AML/AML_Data/Figures/aml_rdata/onco.RData")
+
+rna_fn = "D:/Projects/CPTAC/AML/AML_Data/Genomics/Data_Sharing/20230724_filtered_rpkm.log2.RDS"
+rna = readRDS(rna_fn)
+
+if(use_imputed){
+  workdir = "D:/Projects/CPTAC/AML/AML_Data/Figures/rna_protein_snf_clustering_update"
+  if(!dir.exists(workdir)) dir.create(workdir, recursive = T)
+  
+  pro_fn = "D:/Projects/CPTAC/AML/AML_Data/Proteomics/prot_ratio_gene_MD_tidy_mapFile_proteogenomics_imputed.tsv"
+  pro = read.delim(pro_fn, sep="\t")
+  rownames(pro) = pro$Gene_name
+  pro = pro[,-1]
+  print(dim(pro))
+
+}else{
+  workdir = "D:/Projects/CPTAC/AML/AML_Data/Figures/rna_protein_snf_clustering_update.orig"
+  if(!dir.exists(workdir)) dir.create(workdir, recursive = T)
+  
+  load("D:/Projects/CPTAC/AML/AML_Data/Figures/aml_rdata/protein.RData")
+  pr_ratio = na.omit(pr_ratio) %>% group_by(Gene_name) %>% slice(1) %>% as.data.frame()
+  rownames(pr_ratio) = pr_ratio$Gene_name
+  pro = pr_ratio[,c(-1,-2)]
+  colnames(pro) = gsub("-",".",colnames(pro))
+  # pr_ratio_stat = pr_ratio_stat[pr_ratio_stat$Gene_name %in% rownames(pr_ratio), ] %>% arrange(desc(sd))
+  print(dim(pro))
+  
+}
+
+
+
+
+
+
+head(rna)
+head(pro)
+
+```
+## Remove RBC/RPL/RPS/HBB genes
+
+```{r }
+rm_gene_list = list()
+rm_gene_dir = "D:/Projects/CPTAC/AML/AML_Data/Clinical/remove_gene_list/"
+
+for(f in list.files(rm_gene_dir, pattern = "RDS")){
+  if(!grepl("rbc_high_cor_genes",f)){
+    print(file.path(rm_gene_dir,f))
+    tmp_df = readRDS(file.path(rm_gene_dir,f))
+    rm_gene_list[[f]] = tmp_df
+  # print(head(tmp_df))
+  }
+}
+
+rbc_highCorr = readRDS("D:/Projects/CPTAC/AML/AML_Data/Clinical/remove_gene_list/rbc_high_cor_genes.RDS")
+colnames(rbc_highCorr)[1] = c("gene_symbol")
+
+
+rm_genes0 = unique(do.call(rbind,rm_gene_list)$gene_symbol)
+rm_genes = unique(c(rm_genes0, rbc_highCorr$gene_symbol))
+length(rm_genes)
+
+
+rna = rna[!(rownames(rna) %in% rm_genes), ]
+pro = pro[!(rownames(pro) %in% rm_genes), ]
+pr_ratio = pr_ratio[!(rownames(pro) %in% rm_genes), ]
+
+dim(rna)
+dim(pro)
+
+```
+## RNA and Protein SD distribution
+
+```{r }
+source("../shared/my_theme.R")
+
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+
+
+rna_stat = do.call(rbind,lapply(1:nrow(rna), function(x){
+  data.frame(Gene_name=rownames(rna)[x], SD=sd(as.numeric(rna[x,]), na.rm = T))
+})) %>% arrange(desc(SD))
+
+pro_stat = do.call(rbind,lapply(1:nrow(pro), function(x){
+  data.frame(Gene_name=rownames(pro)[x], SD=sd(as.numeric(pro[x,]), na.rm = T))
+})) %>% arrange(desc(SD))
+
+
+
+head(rna_stat)
+head(pro_stat)
+
+# rna_top50_sd_cutoff = round(rna_stat$SD[ceiling(length(rna_stat$SD)*0.5)],2)
+rna_top50_sd_cutoff = round(median(rna_stat$SD),3)
+rna_top50 = rna[match(rna_stat[rna_stat$SD>rna_top50_sd_cutoff,]$Gene_name,rownames(rna)), ]
+dim(rna_top50)
+
+# pro_top50_sd_cutoff = round(pro_stat$SD[ceiling(length(pro_stat$SD)*0.5)],2)
+pro_top50_sd_cutoff = round(median(pro_stat$SD),3)
+pro_top50 = pro[match(pro_stat[pro_stat$SD>pro_top50_sd_cutoff,]$Gene_name,rownames(pro)), ]
+dim(pro_top50)
+
+
+
+ggplot() + 
+  geom_histogram(data = rna_stat, aes(x=SD),fill="darkcyan",color="white",stat="bin",binwidth = 0.1,alpha=0.6, size=0.1) + 
+  geom_histogram(data = pro_stat, aes(x=SD),fill="darkorange",color="white",stat="bin",binwidth = 0.1,alpha=0.6, size=0.1) +
+  ylab("Gene count") +
+  theme.basic() +
+  annotate("rect", xmin = floor(max(rna_stat$SD))-1.1, xmax = floor(max(rna_stat$SD))-1, ymin = 1800, ymax = 2000,
+           alpha = .6,fill = "darkcyan") +
+  annotate("rect", xmin = floor(max(rna_stat$SD))-1.1, xmax = floor(max(rna_stat$SD))-1, ymin = 1600, ymax = 1800,
+           alpha = .6,fill = "darkorange") +
+  annotate(geom="text", x=floor(max(rna_stat$SD))-0.6, y=1900, label="RNA", size=4,
+           color="black", fontface="plain") +
+  annotate(geom="text", x=floor(max(rna_stat$SD))-0.6, y=1700, label="Protein", size=4,
+           color="black", fontface="plain") +
+  geom_vline(xintercept = rna_top50_sd_cutoff, color="darkcyan", linetype="dashed") +
+  geom_vline(xintercept = pro_top50_sd_cutoff, color="darkorange", linetype="dashed") +
+  annotate(geom="text", x= rna_top50_sd_cutoff+2, y=1500, label=paste0("RNA median SD: ",rna_top50_sd_cutoff), size=4,
+           color="darkcyan", fontface="plain") +
+  annotate(geom="text", x= rna_top50_sd_cutoff+2, y=1300, label=paste0("Protein median SD: ",pro_top50_sd_cutoff), size=4,
+           color="darkorange", fontface="plain")
+
+ggsave(filename = file.path(workdir, "rna_pro_sd.png"), width = 6, height = 4, dpi = 300, units = "in")
+
+
+
+```
+
+
+## SNF clustering
+
+```{r }
+source("../cluster/SNF.R")
+
+smp_lst = Reduce(intersect,list(colnames(pro),colnames(rna)))
+
+
+rna_df = data.table::transpose(rna %>% dplyr::select(all_of(smp_lst)))
+rownames(rna_df) = smp_lst
+colnames(rna_df) = rownames(rna)
+print(dim(rna_df))
+
+pro_df = data.table::transpose(pro %>% dplyr::select(all_of(smp_lst)))
+rownames(pro_df) = smp_lst
+colnames(pro_df) = rownames(pro)
+print(dim(pro_df))
+
+
+# cluster number range
+min_cluster_num = 2
+max_cluster_num = 10
+
+
+slice_ratios = seq(0.1, 1, by=0.1)
+for(ratio in slice_ratios){ # slide data based on SD
+  for(condition in c("overlap","individual")){ # whether to use co-detected genes in RNA and Protein
+    
+    combn_plan = paste0("RNA.Protein-",ratio,"-",condition)
+    curr_dir = file.path(workdir,condition,paste0("RNA.Protein-",ratio))
+    if(!dir.exists(curr_dir)) dir.create(curr_dir, recursive = T)
+    print(paste0("*** get fused graph for ",combn_plan))
+    
+    if(condition=="overlap"){
+      coid_genes = intersect(rna_stat$Gene_name,pro_stat$Gene_name)
+      rna_stat_sub = rna_stat %>% filter(Gene_name %in% coid_genes) %>% arrange(desc(SD))
+      pro_stat_sub = pro_stat %>% filter(Gene_name %in% coid_genes) %>% arrange(desc(SD))
+    }else{
+      rna_stat_sub = rna_stat
+      pro_stat_sub = pro_stat
+    }
+    
+    # set data list
+    rna_df_sub = rna_df[,colnames(rna_df) %in% rna_stat_sub[1:ceiling(length(rna_stat_sub$SD)*ratio), ]$Gene_name]
+    pro_df_sub = pro_df[,colnames(pro_df) %in% pro_stat_sub[1:ceiling(length(pro_stat_sub$SD)*ratio), ]$Gene_name]
+    print(paste0("RNA input dim: ", ncol(rna_df_sub)))
+    print(paste0("Protein input dim: ", ncol(pro_df_sub)))
+    
+    dat_used = list(RNA = rna_df_sub,
+                    Protein = pro_df_sub)
+    
+    
+    snf_result = do_snf_analysis(dat_used,
+                                 K = 20,
+                                 alpha = 0.5,
+                                 T = 1000,
+                                 dist_metric = "euclidean",
+                                 min_cluster_num = min_cluster_num,
+                                 max_cluster_num = max_cluster_num,
+                                 cluster_method = "spectral",
+                                 display_cluster = FALSE,
+                                 workdir = curr_dir,
+                                 prefix = paste0(combn_plan))
+    
+    saveRDS(snf_result, file=file.path(curr_dir,paste0(combn_plan,".RDS")))
+    
+    fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+    dat_list = snf_result$dat_dist
+    # use correlation matrix for silhouette analysis
+    group_list = snf_result$group
+    
+    print(paste0("*** get snf clusters under certain cluster number range ",min_cluster_num,"~",max_cluster_num))
+    binary.ht = FALSE
+    smp_lst_fused_lst = evaluate_snf_cluster(fusion_graph=fusion_graph,
+                                             group_list=group_list,
+                                             dat_list=dat_list,
+                                             plot.sil=FALSE,
+                                             plot.pca=FALSE,
+                                             plot.umap=TRUE,
+                                             plot.heatmap=TRUE,
+                                             binary.ht=binary.ht,
+                                             custom_color=FALSE,
+                                             # myColor=c("#ffffd9","#1d5782"),
+                                             myColor=c("darkblue","darkred"),
+                                             meta_df=met_pr,
+                                             arm_annot=arm,
+                                             mut_col=NULL,
+                                             workdir=curr_dir,
+                                             prefix=ifelse(binary.ht,paste0(combn_plan,"_bin"),paste0(combn_plan)))
+    
+    print(paste0("*** get concordance between each graph and the final fused graph for clusters "))
+    nmi_df = evaluate_graph_concordance(fusion_graph=fusion_graph,
+                                        dat_graph=snf_result$dat_graph[setdiff(names(snf_result$dat_graph),"fusion_graph")],
+                                        sample_annot=NULL,
+                                        min_cluster_num = min_cluster_num,
+                                        max_cluster_num = max_cluster_num,
+                                        workdir=curr_dir,
+                                        prefix=combn_plan,
+                                        plot=FALSE)
+    
+    print(paste0("*** plot MNI changes by cluster numbers "))
+    plot_nmi_changes(nmi_df, workdir=curr_dir, prefix=combn_plan, fig.height = 4, fig.width = 6)
+    
+    print(paste0("*** Sankey plot to show cluster changes by cluster numbers "))
+    plot_cluster_sankey(group_list = group_list,
+                        workdir = curr_dir,
+                        prefix = combn_plan)
+    
+  }
+}
+
+
+```
+# Use baker method to refine SNF clusters
+
+```{r }
+suppressMessages(library(dplyr))
+
+# check stable samples which kept in the same clustering from cluster number 2 to 10
+snf_result = readRDS(file.path(workdir,"individual/RNA.Protein-1/RNA.Protein-1-individual.RDS"))
+fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+group = snf_result$group[["5_clusters"]]
+
+baker = read.delim("D:/Projects/CPTAC/AML/AML_Data/tmp/snf_and_baker.csv", sep=",")
+snf_baker0 = do.call(rbind, lapply(baker$ID.SNF.Baker, function(x){
+  data.frame(Case_ID=unlist(strsplit(x,"\\ "))[2], 
+             SNF=paste0("C",unlist(strsplit(x,"\\ "))[3]), 
+             Baker=unlist(strsplit(x,"\\ "))[4],
+             stringsAsFactors = F)
+  })) %>% as.data.frame() %>% arrange(SNF,Baker)
+
+snf_baker = do.call(rbind, lapply(unique(snf_baker0$SNF), function(x){
+  tmp = snf_baker0[snf_baker0$SNF==x,]
+  tmp[tmp$Baker!=1,]$Baker = 2
+  return(tmp)
+}))
+
+# merge C5-1 and C5-2 to C5
+snf_baker[snf_baker$SNF=="C5",]$Baker = 1
+
+# plot UMAP
+source("../cluster/silhouette_analysis.R")
+snf_baker2fusion = snf_baker[match(rownames(fusion_graph),snf_baker$Case_ID),]
+group = paste(snf_baker2fusion$SNF, snf_baker2fusion$Baker, sep="-")
+group = gsub("C5-1|C5-2","C5",group)
+
+umap = plot_umap(fusion_graph, 
+                 C=10,
+                 group=group,
+                 # group=paste(snf_baker$SNF,snf_baker$Baker,sep="-"),
+                 n_components=2,
+                 add_ellipse=FALSE, 
+                 add_segments=TRUE)
+umap
+ggsave(filename=paste0(file.path(workdir,paste0("umap_snf_baker_10cluster.png"))),
+       width = 8,height = 8,dpi = 300,units = "in")
+
+
+umap = plot_umap(fusion_graph[snf_baker$Case_ID,snf_baker$Case_ID],
+                 C=10,
+                 group=paste(snf_baker$SNF),
+                 # group=paste(snf_baker$SNF,snf_baker$Baker,sep="-"),
+                 n_components=2,
+                 add_ellipse=FALSE,
+                 add_segments=TRUE)
+umap
+ggsave(filename=paste0(file.path(workdir,paste0("umap_snf_baker_cluster.png"))),
+       width = 8,height = 8,dpi = 300,units = "in")
+
+
+
+#  plot Heatmap, Baker's to SNF 5 clusters 
+source("../cluster/AML_heatmap_column_annotation.R")
+cols = ggsci::pal_jco()(10)
+snf_cls_col = c("C1"=cols[1],"C2"=cols[2],"C3"=cols[3],"C4"=cols[4],"C5"=cols[5])
+baker_cls_col = c("1"='#C71583',"2"='#ffbaba')
+# baker_cls_col = c("1"=cols[6],"2"=cols[7])
+
+for(con in c("snf_baker","snf")){
+  if(con=="snf_baker"){
+    baker_cls = snf_baker$Baker
+    baker_cls_col = baker_cls_col
+    column_split = paste(snf_baker$SNF,snf_baker$Baker,sep="-")
+    column_split = gsub("C5-1","C5",column_split)
+  }else{
+    baker_cls = NULL
+    baker_cls_col = NULL
+    column_split = snf_baker$SNF
+  }
+  
+  arm$ID = gsub("-",".",arm$ID)
+  column_ha = aml_ht_column_annotation.subcluster(meta_pr = met_pr,
+                                                  arm = arm,
+                                                  case_col="patientID",
+                                                  samples= snf_baker$Case_ID, #gsub("[.]","-",snf_baker$Case_ID),
+                                                  snf_cls = snf_baker$SNF,
+                                                  snf_cls_col = snf_cls_col,
+                                                  baker_cls = baker_cls,
+                                                  baker_cls_col = baker_cls_col,
+                                                  na_col = "lightgrey")
+
+  mat =  as.matrix(fusion_graph[snf_baker$Case_ID,snf_baker$Case_ID])
+  rownames(mat) = rownames(mat)
+  colnames(mat) = colnames(mat)
+  # rownames(mat) = gsub("[.]","-",rownames(mat))
+  # colnames(mat) = gsub("[.]","-",colnames(mat))
+  
+  
+  # normalize = function(X) X/rowSums(X)
+  # mat = normalize(mat)
+  # mat = mat + t(mat)
+  
+  ht1 = suppressMessages(Heatmap(mat, 
+                                 name = paste0(5,"_clusters"),
+                                 cluster_rows = FALSE,
+                                 cluster_columns = FALSE,
+                                 column_split = column_split,
+                                 top_annotation = column_ha,
+                                 show_row_names = FALSE,
+                                 column_names_gp = grid::gpar(fontsize = 4),
+                                 row_names_gp = grid::gpar(fontsize = 4)))
+  
+  png(file.path(workdir,paste0("heatmap_",con,"_5clusters.png")), width=15, height=15, units="in", res=500)
+  draw(ht1, merge_legends = TRUE, 
+       heatmap_legend_side="left",
+       annotation_legend_side="left",
+       legend_grouping = "original")
+  dev.off()
+
+}
+
+# plot Heatmap, apply Baker's to SNF 10 clusters 
+source("../cluster/AML_heatmap_column_annotation.R")
+snf_baker_cut = read.delim("D:/Projects/CPTAC/AML/AML_Data/tmp/SNF_Baker_1_10.csv", sep = ",")
+snf_baker_cut[order(snf_baker_cut$SNF, decreasing = F),]
+snf_baker_cut = snf_baker_cut %>% arrange(Baker) %>% arrange(SNF) %>% select(ID, SNF, Baker, SNF_baker)
+
+cols = ggsci::pal_jco()(10)
+snf_cls_col = c("C1"=cols[1],"C2"=cols[2],"C3"=cols[3],"C4"=cols[4],"C5"=cols[5],
+                "C6"=cols[6],"C7"=cols[7],"C8"=cols[8],"C9"=cols[9],"C10"=cols[10])
+baker_cls_col = c("1"='#C71583',"2"='#ffbaba')
+
+for(con in c("snf_baker")){
+  if(con=="snf_baker"){
+    baker_cls = snf_baker_cut$Baker
+    baker_cls_col = baker_cls_col
+    column_split = snf_baker_cut$SNF #paste(snf_baker_cut$SNF,snf_baker_cut$Baker,sep="-")
+  }else{
+    baker_cls = NULL
+    baker_cls_col = NULL
+    column_split = snf_baker_cut$SNF
+  }
+  
+  arm$ID = gsub("-",".",arm$ID)
+  column_ha = aml_ht_column_annotation.subcluster(meta_pr = met_pr,
+                                                  arm = arm,
+                                                  case_col="patientID",
+                                                  samples= snf_baker_cut$ID, #gsub("[.]","-",snf_baker$Case_ID),
+                                                  snf_cls = paste0("C",snf_baker_cut$SNF),
+                                                  snf_cls_col = snf_cls_col,
+                                                  baker_cls = NULL,
+                                                  baker_cls_col = NULL,
+                                                  na_col = "lightgrey")
+
+  mat =  as.matrix(fusion_graph[snf_baker_cut$ID,snf_baker_cut$ID])
+  rownames(mat) = rownames(mat)
+  colnames(mat) = colnames(mat)
+
+  ht1 = suppressMessages(Heatmap(mat, 
+                                 name = paste0(10,"_clusters"),
+                                 cluster_rows = FALSE,
+                                 cluster_columns = FALSE,
+                                 column_split = column_split,
+                                 top_annotation = column_ha,
+                                 show_row_names = FALSE,
+                                 column_names_gp = grid::gpar(fontsize = 4),
+                                 row_names_gp = grid::gpar(fontsize = 4)))
+  
+  png(file.path(workdir,paste0("heatmap_",con,"_10clusters.png")), width=15, height=15, units="in", res=500)
+  draw(ht1, merge_legends = TRUE, 
+       heatmap_legend_side="left",
+       annotation_legend_side="left",
+       legend_grouping = "original")
+  dev.off()
+
+}
+
+
+
+## plot genotype characteristics for each cluster
+library(data.table)
+
+fisher_test = read.delim("D:/Projects/CPTAC/AML/AML_Data/tmp/202307_cluster_naming.csv", sep=",")
+fisher_test = fisher_test[fisher_test$Query_Mut!=0,]
+
+
+fres = table(fisher_test[,c("group","query")])
+fres_df = do.call(rbind, lapply(1:nrow(fres), function(x){
+  # print(fres[x,])
+  idx = colnames(fres)[which(fres[x,] == 1)]
+  data.frame(Cluster=rownames(fres)[x], Query=idx)
+}))
+
+
+fres_df$Cluster = paste0("C",fres_df$Cluster)
+fres_df$label = rep(1, nrow(fres_df))
+
+ggplot(data = fres_df) + 
+  geom_tile(aes(x=label, y=factor(Query, levels = rev(unique(fres_df$Query)))), 
+            fill="royalblue",color="white", linewidth=0.75) +
+  theme_bw() +
+  facet_wrap(~Cluster, nrow = 1) +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_text(size=16),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background =element_rect(fill="darkred",color="white"),
+        strip.text = element_text(size=18, face = "bold", colour = "white"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank())
+  
+  
+ggsave(filename = file.path(workdir,"genotype_characteristic.png"), width = 10, height = 8, dpi=500, units = "in")
+
+
+```
+
+## Eigen gap and rotation changes along the number of cluster changing
+
+```{r }
+source("../cluster/SNF.R")
+
+
+# check stable samples which kept in the same clustering from cluster number 2 to 10
+snf_result = readRDS(file.path(workdir,"individual/RNA.Protein-1/RNA.Protein-1-individual.RDS"))
+fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+group_list = snf_result$group
+
+estimationResult = SNFtool::estimateNumberOfClustersGivenGraph(fusion_graph, 2:10)
+estimationResult
+
+
+eig = estimate_number_of_clusters_given_graph(fusion_graph, ncluster = 2:10)
+
+table_measures <- data.frame(cluster = 2:10, eigen_gap = eig[[1]], rotation_cost = unlist(eig[[2]]))
+scaleFactor <- max(table_measures$eigen_gap) / max(table_measures$rotation_cost)
+
+ggplot(table_measures, aes(x=cluster)) +
+  geom_line(aes(y=eigen_gap), method="loess", col="blue", size=2) +
+  geom_line(aes(y=rotation_cost * scaleFactor), method="loess", col="red" , size=2) +
+  scale_y_continuous(name="eigen gap", sec.axis=sec_axis(~./scaleFactor, name="rotation cost"))+ 
+    theme(axis.title.x = element_text(size=16, face = "bold",color="black"),
+          axis.title.y = element_text(size=16, face = "bold",color="black"),
+          axis.text = element_text(color="black",size=16, face = "bold"),
+          axis.text.x =element_text(color="black",size=16, face = "bold"),
+          panel.border = element_blank(),
+          axis.ticks.x = element_blank(),
+          strip.text.x = element_text(size = 9,color="black"),
+          panel.background = element_rect(fill = "white", colour = "white", size = 0.5, linetype = "solid"),
+          panel.grid.major = element_line(size = 0.5, linetype ='solid', colour = "grey"),
+          panel.grid.minor = element_line(size = 0.25, linetype = 'solid', colour = "grey"),
+          plot.title = element_text(hjust = 0.5, size = 20, face = "bold", vjust=2),
+          legend.background=element_rect(fill = alpha("white", 0)), legend.position = "none") +
+  theme(
+    axis.title.y.left=element_text(color="blue"),
+    axis.text.y.left=element_text(color="blue"),
+    axis.title.y.right=element_text(color="red"),
+    axis.text.y.right=element_text(color="red")
+  )
+
+ggsave(filename = file.path(workdir,"SNF_selection_clusters.png"), width = 8, height = 8, dpi=300, units = "in")
+
+
+
+```
+
+## Determine clusters based on Sankeyplot and UMAP
+
+```{r }
+source("../cluster/SNF.R")
+
+# check stable samples which kept in the same clustering from cluster number 2 to 10
+snf_result = readRDS(file.path(workdir,"individual/RNA.Protein-1/RNA.Protein-1-individual.RDS"))
+fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+group_list = snf_result$group
+
+snf_baker_cut = read.delim("D:/Projects/CPTAC/AML/AML_Data/tmp/SNF_Baker_1_10.csv", sep = ",")
+
+snf_baker_cut[snf_baker_cut$SNF_baker=="3-1",]
+
+ncls10 = group_list[["10_clusters"]]
+
+# s0: consistently stable, remain as it is, no consideration about the sample sizes
+s0 = c(2,5,1)
+
+# s1: relative large size groups, but separate in the middle no more than 2 times. For these clusters apply Alec's method to get core samples and outlier samples, core sample keep as the cluster, outliers move to and merge with all s2 samples for jointly clustering using Alec's method to find a core sample cluster and the other cluster
+s1 = c(4, 6, 7, 8, 3)
+
+# s2: relative small size groups, and quit instable samples in it. Together with the s1 outlier samples as one group for jointly clustering using Alec's method to determine 2 clusters, one is potentially effective cluster, the other is least stable samples.
+s2 = c(9, 10)
+
+# after that, 
+
+
+
+
+```
+
+## Determine data slicing ratio to use for SNF input 
+
+In principle, an optimal ratio should make the fusion graph not determined by a particular type of data, all types of data should contribute equally.
+Can evaluate by NMI changes.
+
+Should check if there is any data (feature dominant) bias potential exists.
+
+Check RNA protein overlapped genes SD distribution, cause it appeared that in overlapped results, fusion graph were dominated by Protein data (same input features), but in individual results, fusion graph were dominated by RNA (more input features).
+
+As NPM1 subtypes were identified based on RNA data, if want to get clusters more representive for NPM1-subtypes, should consider using individual feature inputs (which I perfer more, because it is the REAL DATA). 
+
+Calculate membership to further evaluate intra-cluster patient similarity.
+
+
+
+```{r }
+library(dplyr)
+
+# check stable samples which kept in the same clustering from cluster number 2 to 10
+snf_result = readRDS(file.path(workdir,"individual/RNA.Protein-1/RNA.Protein-1-individual.RDS"))
+fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+group_list = snf_result$group
+
+# group_df = do.call(rbind, lapply(1:length(group_list), function(x){
+#   this_grp = group_list[[x]]
+#   return(data.frame(cluster=this_grp, case_id=colnames(fusion_graph), nc=rep(x+1,length(this_grp))))
+#   }))
+
+groups = lapply(1:length(group_list), function(x){
+  this_grp = group_list[[x]]
+  return(data.frame(cluster=this_grp, case_id=colnames(fusion_graph), nc=rep(x+1,length(this_grp))))
+  })
+
+
+status = c("s1", # no changes, same size
+           "s2", # smaller size (subset), together forming into one cluster without coming from other clusters 
+           "s3") # smaller size (subset), but rejoining with samples from other clusters to forming a new cluster
+
+
+status_list = list()
+for(i in 10:3){
+  j = i-1
+  print(paste0(i,"C to ",j,"C"))
+  rig = groups[[i-1]]
+  lef = groups[[j-1]]
+    
+  # print(rig)
+  # print(lef)
+  ij_df = data.frame()
+  for(n in 1:j){ # few clusters
+    n_ids = lef[lef$cluster==n,]$case_id
+    for(m in 1:i){ # more clusters
+      m_ids = rig[rig$cluster==m,]$case_id
+      co_ids = intersect(n_ids,m_ids)
+      union_ids = union(n_ids,m_ids)
+      if(length(co_ids)>0){ # must have overlap samples
+        if(length(co_ids)==length(union_ids)){ # satisfy s1 status
+          if(nrow(ij_df)==0){
+            ij_df = data.frame(case_id=co_ids,status=rep("s1",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m))
+          }else{
+            ij_df = rbind(ij_df, data.frame(case_id=co_ids,status=rep("s1",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m)))
+          }
+        } else if((length(n_ids)>length(co_ids)) && (length(setdiff(m_ids,co_ids))==0)){ # satisfy s2 status
+          if(nrow(ij_df)==0){
+            ij_df = data.frame(case_id=co_ids,status=rep("s2",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m))
+          }else{
+            ij_df = rbind(ij_df, data.frame(case_id=co_ids,status=rep("s2",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m)))
+          }
+        }else{
+          if(length(m_ids)==(length(co_ids)+1)){
+            if(nrow(ij_df)==0){
+              ij_df = data.frame(case_id=co_ids,status=rep("s2",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m))
+            }else{
+              ij_df = rbind(ij_df, data.frame(case_id=co_ids,status=rep("s2",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m)))
+            }
+          }else{
+            if(nrow(ij_df)==0){
+              ij_df = data.frame(case_id=co_ids,status=rep("s3",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m))
+            }else{
+              ij_df = rbind(ij_df, data.frame(case_id=co_ids,status=rep("s3",length(co_ids)),pair=paste0(j,"_",i),combn=paste0(j,"_C",n,"-",i,"_C",m)))
+            }
+          }
+          
+        }
+        
+      }
+    }
+  }
+  # print(ij_df)
+  status_list[[paste0(j,"to",i)]] = ij_df
+}
+
+status_df = do.call(rbind,status_list)
+rownames(status_df) = NULL
+status_df
+
+# result = data.table::dcast(data.table::setDT(status_df), case_id~combn, value.var = "status")
+# result = data.table::dcast(data.table::setDT(status_df), case_id~pair, value.var = c("status","combn"))
+status_mt = data.table::dcast(data.table::setDT(status_df), case_id~pair, value.var = "status")
+colnames(status_mt)[2:ncol(status_mt)] = paste("status",colnames(status_mt)[2:ncol(status_mt)],sep="_")
+combn_mt = data.table::dcast(data.table::setDT(status_df), case_id~pair, value.var = "combn")
+colnames(combn_mt)[2:ncol(combn_mt)]  = paste("combn",colnames(combn_mt)[2:ncol(combn_mt)],sep="_")
+
+result = merge(status_mt, combn_mt, by="case_id")
+result =as.data.frame(result)
+result_sub = result[,c("case_id",colnames(result)[grepl("status_",colnames(result))])]
+result_sub
+
+apply(result_sub[,2:ncol(result_sub)], 2, function(x){
+  table(x)
+})
+
+
+result[grepl("10_C2",result$combn_9_10),]
+
+
+
+
+
+
+
+# Check RNA protein ovalped genes SD distribution
+
+
+# nmi_df
+
+
+
+```
+
+## Check specific snf reuslt with UMAP
+```{r }
+source("../cluster/silhouette_analysis.R")
+options(scipen = 999)
+
+snf_result = readRDS(file.path(workdir,"individual/RNA.Protein-1/RNA.Protein-1-individual.RDS"))
+
+fusion_graph = snf_result$dat_graph[["fusion_graph"]]
+write.table(fusion_graph,file = file.path("D:/Projects/CPTAC/AML/AML_Data/Figures/rna_protein_snf_clustering_update/individual/RNA.Protein-1/fusion_graph.tsv"), sep="\t", quote = F, row.names = T)
+group = snf_result$group[[6]] # for snf 7 clusters
+
+plt = plot_umap(W=fusion_graph, C=7, group=group, add_ellipse=TRUE, n_components = 2)
+plt2 = plot_umap(W=fusion_graph, C=7, group=group, add_ellipse=TRUE, n_components = 3)
+
+# save_image(plt, file = file.path(workdir,"umap.png"), width = 8 * 96, height = 8 * 96)
+# plotly::export(p = plt, #the graph to export
+#                file = file.path(workdir,"umap.png")) #the name and type of file (can be .png, .jpeg, etc.)
+
+plt2
+# ggsave(filename = file.path(workdir,"umap_individual_7.png"), width = 8, height = 8, dpi=300, units = "in")
+
+min(fusion_graph)
+mean(fusion_graph)
+median(fusion_graph)
+max(fusion_graph)
+quantile(fusion_graph)
+
+```

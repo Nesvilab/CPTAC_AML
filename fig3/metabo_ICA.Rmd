@@ -1,0 +1,473 @@
+
+
+
+```{r}
+cptac.metadata <- data.table::fread("./merged_metadata.tsv")
+cptac.metadata[cptac.metadata$Metabolomics.Use==T,]
+
+dim(cptac.metadata)
+```
+
+```
+pnnl.metabo.hilic.prenorm.bt <- readxl::read_xlsx("/mctp/users/chualec/rstudio/AML/PNNL/Metabolites_HILIC_Pos_log2_GlobalMedian_Backtrans_20230426.xlsx")%>% data.frame()
+pnnl.metabo.hilic.prenorm.bt <- pnnl.metabo.hilic.prenorm.bt%>% column2rowname("Name")
+colnames(pnnl.metabo.hilic.prenorm.bt) <- word(word(colnames(pnnl.metabo.hilic.prenorm.bt), 1, sep = "_P"), 2, sep = "AML_")
+
+pnnl.metabo.rp.prenorm.bt <- readxl::read_xlsx("/mctp/users/chualec/rstudio/AML/PNNL/Metabolites_RP_Pos_log2_GlobalMedian_Backtrans_20230502.xlsx")
+pnnl.metabo.rp.prenorm.bt <- pnnl.metabo.rp.prenorm.bt%>% data.frame()%>% column2rowname("Name")
+colnames(pnnl.metabo.rp.prenorm.bt) <- word(colnames(pnnl.metabo.rp.prenorm.bt), 1, sep = "_P")
+```
+
+
+```{r, fig.height=5, fig.width=10}
+
+rbc_contamination_patients <- word(rbc_contamination$CaseID[rbc_contamination$isRBCcontam == T], 1, 2, sep = "[.]")
+
+
+tmp1 <- pnnl.metabo.hilic.prenorm
+tmp1 <- tmp1[rowSums(is.na(tmp1)) == 0,]
+tmp1 <- prcomp(tmp1)
+tmp1 <- tmp1$rotation %>% data.frame() %>% mutate(
+  source = metabo.lipo.metadata$`Sample Type`[match(rownames(.), metabo.lipo.metadata$`Aliquot ID`)],
+  rbc = ifelse(word(rownames(.), 1, 2, sep = "[.]") %in% rbc_contamination_patients, "RBC", ""),
+  sex = cptac.metadata$Consent.sex[match(word(rownames(.), 1, 2, sep = "[.]"), cptac.metadata$Participant)])
+
+
+tmp2 <- pnnl.metabo.rp.prenorm
+tmp2 <- tmp2[rowSums(is.na(tmp2)) == 0,]
+tmp2 <- prcomp(tmp2)
+tmp2 <- tmp2$rotation %>% data.frame() %>% mutate(
+  source = metabo.lipo.metadata$`Sample Type`[match(rownames(.), metabo.lipo.metadata$`Aliquot ID`)],
+  rbc = ifelse(word(rownames(.), 1, 2, sep = "[.]") %in% rbc_contamination_patients, "RBC", ""),
+  sex = cptac.metadata$Consent.sex[match(word(rownames(.), 1, 2, sep = "[.]"), cptac.metadata$Participant)])
+
+
+p1 <- ggscatter(tmp1, x="PC1", y="PC2", color = "source") + labs(title = "HILIC pre-norm PCA")
+p2 <- ggscatter(tmp2, x="PC1", y="PC2", color = "source") + labs(title = "RP pre-norm PCA")
+plot_grid(p1,p2,nrow=1)
+
+p1 <- ggscatter(tmp1, x="PC1", y="PC2", color = "rbc") + labs(title = "HILIC pre-norm PCA")
+p2 <- ggscatter(tmp2, x="PC1", y="PC2", color = "rbc") + labs(title = "RP pre-norm PCA")
+plot_grid(p1,p2,nrow=1)
+
+p1 <- ggscatter(tmp1, x="PC1", y="PC2", color = "sex") + labs(title = "HILIC pre-norm PCA")
+p2 <- ggscatter(tmp2, x="PC1", y="PC2", color = "sex") + labs(title = "RP pre-norm PCA")
+plot_grid(p1,p2,nrow=1)
+
+
+
+
+```
+
+```{r}
+rbc_contamination$ID <- paste0(word(rbc_contamination$CaseID, 1, 2, sep = "[.]"), ".", word(rbc_contamination$CaseID, 3, sep = "[.]"))
+
+tmp.sex <- metabo.metadata.samplelist$sex[match(colnames(pnnl.metabo), gsubber(metabo.metadata.samplelist$`Aliquot ID`))]
+tmp.rbc <- rbc_contamination$RBC_score[match(word(colnames(pnnl.metabo), 1,2, sep = "[.]"), word(gsubber(rbc_contamination$ID), 1, 2, sep = "[.]"))]
+tmp.source <- metabo.metadata.samplelist$`Sample Type`[match(colnames(pnnl.metabo), gsubber(metabo.metadata.samplelist$`Aliquot ID`))]
+tmp.purity <- purity_estimate$Purity[match(word(colnames(pnnl.metabo), 1, 2, sep = "[.]"), gsubber(purity_estimate$ID))]
+
+design0 <- model.matrix(~tmp.sex + tmp.rbc + tmp.source + tmp.purity)
+pnnl.metabo.postnorm <- limma::removeBatchEffect(pnnl.metabo, covariates = design0) %>% data.frame()
+cptac.metabo <- impute.knn(pnnl.metabo.postnorm %>% as.matrix(), k=10)$data %>% data.frame()
+colnames(cptac.metabo) <- word(colnames(cptac.metabo), 1, 2, sep = "[.]")
+
+dim(cptac.metabo)
+```
+
+
+
+
+
+
+```{r}
+library(fastICA)
+
+
+cptac.metabo.rbc <- apply(cptac.metabo, 1, z_normalize) %>% t() %>% data.frame()
+
+cptac.metabo.rbc.ICA <- list()
+
+for(i in 2:20){
+  tmp <- fastICA(cptac.metabo.rbc, i, alg.typ = "parallel", fun="logcosh", method = "R")
+  cptac.metabo.rbc.ICA[[i]] <- tmp
+}
+
+
+```
+
+
+
+
+
+```{r, fig.height=5, fig.width=5}
+ICA.rbc.BIC <- data.frame()
+for(i in 2:20){
+test <- cptac.metabo.rbc.ICA[[i]]$S %*% cptac.metabo.rbc.ICA[[i]]$A
+test2 <-  cptac.metabo.rbc.ICA[[i]]$X
+lm1 <- lm(test ~ test2)
+
+tmp.ssr <- sum(lm1$residuals^2)
+num.ob <- nrow(cptac.metabo.rbc)
+tmp.logL <- -(num.ob/2)*(log(tmp.ssr/num.ob))-(num.ob/2)*(log(2*pi))-(num.ob/2)
+tmp.bic <- i*log(ncol(cptac.metabo.rbc)) -2*tmp.logL
+
+
+ICA.rbc.BIC <- rbind(ICA.rbc.BIC, data.frame(i = i, distsq = sum((test2-test)^2),
+                                             BIC = tmp.bic, 
+                                             logL = tmp.logL,
+                                             linBIC = stats4::BIC(lm(as.vector(test) ~ as.vector(test2)))))
+
+}
+# lm1 <- lm(as.vector(test) ~ as.vector(test2))
+library(ggpubr)
+ggscatter(ICA.rbc.BIC, x="i", y="logL")
+ggscatter(ICA.rbc.BIC, x="i", y="BIC")
+ggscatter(ICA.rbc.BIC, x="i", y="linBIC")
+ggscatter(ICA.rbc.BIC, x="i", y="distsq")
+
+ICA.rbc.BIC[ICA.rbc.BIC$linBIC == max(ICA.rbc.BIC$linBIC),]
+
+```
+
+ssr <- sum(res^2) #sum of squared residuals
+logL <- -(nrow(x)/2)*(log(ssr/nrow(x)))-(nrow(x)/2)*(log(2*pi))-(nrow(x)/2)
+BIC = log(n)k - 2log(L)
+where
+k = # of variables
+L = max likelihood of model
+n = sample size
+log = log(e)
+
+
+−2 ∗ log-likelihood + npar ∗ log(nobs)
+
+```{r, fig.height=5, fig.width=5}
+
+
+Heatmap(cptac.metabo.rbc.ICA[[8]]$S , show_row_names = F, show_row_dend = F, show_column_dend = F, show_column_names = F)
+Heatmap(cptac.metabo.rbc.ICA[[8]]$A , show_row_names = F, show_row_dend = F, show_column_dend = F, show_column_names = F)
+
+
+p1 <- Heatmap(cptac.metabo.rbc.ICA[[8]]$S %*% cptac.metabo.rbc.ICA[[8]]$A , show_row_names = F, show_row_dend = F, show_column_dend = F, show_column_names = F)
+
+p1
+Heatmap(cptac.metabo.rbc.ICA[[8]]$X, show_row_names = F, show_row_dend = F, show_column_dend = F, show_column_names = F,  row_order= rownames(cptac.metabo)[row_order(p1)], column_order = colnames(cptac.metabo)[column_order(p1)])
+
+
+```
+
+
+```{r, fig.height=5, fig.width=5}
+tmp <- prcomp(cptac.metabo.rbc.ICA[[8]]$S %>% t())
+
+tmp <- tmp$rotation %>% data.frame()
+tmp$label <- ifelse(grepl("Unknown", rownames(tmp)), "Named", "Unknown")
+tmp <- tmp %>% arrange(label)
+ggscatter(tmp, x="PC1", y="PC2", color="label")
+```
+
+
+
+
+
+
+```{r, fig.height=5, fig.width=5}
+
+tmp <- tmp.dup %>% dplyr::filter(!unknown)
+
+ggbarplot(data.frame(table(dup = tmp$dup, cutoff = tmp$cutoff)), x="cutoff", y="Freq", fill = "dup", title = "Number of known unique metabolites") + rotate_x_text(90)
+data.frame(table(dup = tmp$dup, cutoff = tmp$cutoff)) %>% dplyr::filter(dup == "Unique") %>% arrange(desc(Freq))
+test <- tmp.dup[grepl("ATP", tmp.dup$ID) & grepl("HILIC", tmp.dup$ID),]
+ifelse(test$ID %in% test$ID[duplicated(test$ID2)], "Duplicate", "Unique")
+data.frame(table(dup = tmp$dup, cutoff = tmp$cutoff, factor = tmp$factor))
+
+tmp <- tmp.dup %>% dplyr::filter(unknown)
+ggbarplot(data.frame(table(dup = tmp$dup, cutoff = tmp$cutoff)), x="cutoff", y="Freq", fill = "dup", title = "Number of Unknown unique metabolites")+ rotate_x_text(90)
+
+tmp <- data.frame(table(dup = tmp$dup, cutoff = tmp$cutoff))
+tmp.bestcutoff <- tmp %>% dplyr::filter(dup == "Unique") %>% dplyr::top_n(n = 1, wt=Freq) %>% pull(cutoff) 
+tmp.bestcutoff <- as.numeric(as.character(tmp.bestcutoff))
+```
+
+```{r, fig.height=5, fig.width=5}
+sigfactor <- data.frame()
+for(i in 1:j){
+f1 <- cptac.metabo.rbc.ICA[[j]]$S[,i]
+names(f1) <- rownames(cptac.metabo)
+
+tmp <- data.frame(score = f1[abs(f1) > tmp.bestcutoff]) %>% tibble::rownames_to_column("ID") %>% mutate(factor = paste0("F", i))
+sigfactor <- rbind(sigfactor, tmp)
+}
+sigfactor$unknown <- ifelse(grepl("Unknown", sigfactor$ID), T, F)
+
+sigfactor$ID2 <- paste0(sigfactor$ID, as.character(sign(sigfactor$score)))
+sigfactor$dup <- ifelse(sigfactor$ID %in% sigfactor$ID[duplicated(sigfactor$ID2)], "Duplicate", "Unique")
+
+ggbarplot(data.frame(table(factor = sigfactor$factor, unknown = ifelse(sigfactor$unknown, "Unknown", "Known"))) %>% dplyr::filter(Freq != 0), x="factor", y="Freq", fill = "unknown", label=T) + labs(x="Factor", title = "Number of metabolites per factor", fill = "Unknown")
+
+data.frame(prop.table(table(factor = sigfactor$factor, unknown = ifelse(sigfactor$unknown, "Unknown", "Known")),1))
+
+ggbarplot(data.frame(table(factor = sigfactor$factor, dup = sigfactor$dup)) %>% dplyr::filter(Freq != 0), x="factor", y="Freq", fill = "dup", label=T) + labs(x="Factor", title = "Number of metabolites per factor")
+
+sigfactor <- sigfactor %>%
+   group_by(factor) %>%
+   arrange(desc(score), .by_group = TRUE)
+
+
+```
+
+
+```{r, fig.height=10, fig.width=10}
+
+tmp.a <- cptac.metabo.rbc.ICA[[8]]$S %>% data.frame()
+# dim(tmp.a)
+# rownames(tmp.a) <- rownames(cptac.metabo)
+
+tmp.b <- tmp.a %>% as.matrix() %>% reshape2::melt()
+library(dplyr)
+tmp.b1 <- tmp.b %>% dplyr::filter(!grepl("Unknown", Var1) & value > 0) %>% group_by(Var2) %>% mutate(absvalue = abs(value)) %>% top_n(n=4, wt=absvalue)
+tmp.b2 <- tmp.b %>% dplyr::filter(!grepl("Unknown", Var1) & value < 0) %>% group_by(Var2) %>% mutate(absvalue = abs(value)) %>% top_n(n=4, wt=absvalue)
+tmp.b <-rbind(tmp.b1, tmp.b2)
+
+tmp.b <- tmp.b %>% group_by(Var2) %>% arrange(desc(value), .by_group=T)
+tmp.c <- tmp.a[rownames(tmp.a) %in% tmp.b$Var1,]
+names(tmp.c) <- gsub("X","F", names(tmp.c))
+Heatmap(tmp.c, column_order = paste0("F", 1:8), row_order = as.character(unique(tmp.b$Var1)), cell_fun = function(j, i, x, y, width, height, fill) {
+        grid.text(ifelse(abs(tmp.c[i, j])>=min(tmp.b$absvalue), "*", ""), x, y, gp = gpar(fontsize = 10))
+}, row_names_max_width = unit(5, units="inch"))
+tmp.b %>% dplyr::filter(Var2 == "X4") %>% dplyr::filter(!grepl("Unknown", Var1)) %>% arrange(value)
+tmp.b[grepl("Sugars-Hexoses-Phosphate", tmp.b$Var1),]
+```
+
+reps for each factor
+```{r}
+
+# tmp.a <- cptac.metabo.rbc.ICA[[8]]$S %>% data.frame()
+# dim(tmp.a)
+# rownames(tmp.a) <- rownames(cptac.metabo)
+# 
+# tmp <- presto::wilcoxauc(cptac.metabo)
+```
+
+```{r, fig.height=10, fig.width=10}
+# for(i in 1:8){
+# tmp.a.filter <- tmp.a[rownames(tmp.a) %in% sigfactor$ID[sigfactor$dup == "Unique" & sigfactor$factor==paste0("F", i)],]
+# print(Heatmap(tmp.a.filter,  column_order = paste0("X", 1:8), row_names_max_width = unit(10, units="inch")))
+# }
+```
+
+
+where do each patient belong?
+```{r, fig.height=10, fig.width=10}
+j <- 8
+for(j in 8){
+
+ICA.patient <- cptac.metabo.rbc.ICA[[j]]$A %>% data.frame()
+rownames(ICA.patient) <- paste0("F", 1:j)
+colnames(ICA.patient) <- colnames(cptac.metabo.rbc)
+Heatmap(ICA.patient)
+ICA.patient.max <- ICA.patient
+# ICA.patient.max$fac <- colnames(ICA.patient.max)[apply(abs(ICA.patient.max),1,which.max)]
+library(cluster)
+# cluster::silhouette(dist(ICA.patient))
+#determine best number of clusters using silhouette scoring
+# tmp <- prcomp(ICA.patient %>% t())
+# tmp <- tmp$rotation %>% data.frame()
+# tmp$fac <- ICA.patient.max$fac
+# # ggscatter(tmp, x="PC1", y="PC2", color="fac") + 
+# ggplot(tmp, aes(x = PC1, y = PC2, color = fac)) +
+#   geom_point() +
+#   stat_ellipse() + theme_pubr()
+library(circlize)
+library(stringr)
+# Heatmap(ICA.patient, top_annotation = ha.simple(colnames(ICA.patient)))
+p1 <- Heatmap(ICA.patient, top_annotation = ha.simple(colnames(ICA.patient)), column_split = snf_clustering$clust[match(colnames(ICA.patient), snf_clustering$ID)])
+print(p1)
+
+# Heatmap(ICA.patient %>% t(), top_annotation = ha.simple(rownames(ICA.patient)), column_split = snf_clustering$clust[match(rownames(ICA.patient), snf_clustering$ID)], cluster_column_slices = F, row_order = paste0("X", 1:j))
+}
+```
+
+```{r, fig.height=5, fig.width=5}
+j <- 8
+# for(j in 2:10){
+ICA.patient <- cptac.metabo.rbc.ICA[[j]]$A %>% data.frame()
+rownames(ICA.patient) <- paste0("F", 1:j)
+colnames(ICA.patient) <- colnames(cptac.metabo.rbc)
+test <- presto::wilcoxauc(ICA.patient, snf_clustering$clust[match(colnames(ICA.patient), snf_clustering$ID)])
+test$sig <- ifelse(test$pval <= 0.05, T, F)
+test$log10p <- -log10(test$pval) * sign(test$logFC)
+test$log10p[test$log10p > 2] <- 2
+test$log10p[test$log10p < -2] <- -2
+test$logFC <- abs(test$logFC)
+p1 <- ggplot(data = test, aes(x = group, y = feature)) + 
+    geom_point(aes(stroke=sig,  size= 4, fill = log10p), pch=21) +
+    scale_fill_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    # scale_color_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    theme_bw() + 
+    ylab("") + 
+    xlab("") + scale_shape_binned()+
+    ggtitle("enrichment analysis")+ rotate_x_text(90) # + facet_wrap(~clust, nrow=1) 
+  # geom_point(aes(size= ifelse(sig, setsize, 0), ))
+print(p1)
+
+
+# }
+
+# for(j in 2:10){
+ICA.patient <- cptac.metabo.rbc.ICA[[j]]$A %>% data.frame()
+rownames(ICA.patient) <- paste0("F", 1:j)
+colnames(ICA.patient) <- colnames(cptac.metabo.rbc)
+test <- presto::wilcoxauc(ICA.patient, primitive_committed$Classification[match(colnames(ICA.patient), primitive_committed$ID)])
+test$sig <- ifelse(test$pval <= 0.05, T, F)
+test$log10p <- -log10(test$pval) * sign(test$logFC)
+test$log10p[test$log10p > 2] <- 2
+test$log10p[test$log10p < -2] <- -2
+test$logFC <- abs(test$logFC)
+p1 <- ggplot(data = test, aes(x = group, y = feature)) + 
+    geom_point(aes(stroke=sig,  size= 4, fill = log10p), pch=21) +
+    scale_fill_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    # scale_color_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    theme_bw() + 
+    ylab("") + 
+    xlab("") + scale_shape_binned()+
+    ggtitle("enrichment analysis")+ rotate_x_text(90) # + facet_wrap(~clust, nrow=1) 
+  # geom_point(aes(size= ifelse(sig, setsize, 0), ))
+print(p1)
+
+
+# }
+
+```
+
+
+```{r, fig.height=10, fig.width=10}
+j <- 7
+ICA.patient <- cptac.metabo.rbc.ICA[[j]]$A %>% data.frame()
+rownames(ICA.patient) <- paste0("F", 1:j)
+colnames(ICA.patient) <- colnames(cptac.metabo.rbc)
+ICA.patient <- reshape2::melt(as.matrix(ICA.patient))
+ICA.patient$clust <- snf_clustering$clust[match(ICA.patient$Var2, snf_clustering$ID)]
+
+ggboxplot(ICA.patient, x="clust", y="value", add="jitter") + facet_wrap(~Var1, nrow=3, ncol=3)
+
+```
+
+```{r, fig.height=10, fig.width=20}
+tmp <- ICA.patient %>% as.matrix() %>% reshape2::melt() %>% data.frame()
+tmp$clust <- snf_clustering$clust[match(tmp$Var2, snf_clustering$ID)]
+
+ggboxplot(tmp, x="clust", y="value") + facet_wrap(~Var1, nrow=2, ncol=4)
+```
+
+metabolite association for factor
+```{r}
+tmp.a <- cptac.metabo.rbc.ICA[[8]]$S %>% data.frame()
+dim(tmp.a)
+rownames(tmp.a) <- rownames(cptac.metabo)
+
+tmp.b <- tmp.a %>% as.matrix() %>% reshape2::melt()
+tmp.b <- tmp.b #%>% dplyr::filter(!grepl("Unknown", Var1)) %>% group_by(Var2) %>% mutate(absvalue = abs(value)) %>% top_n(n=Inf, wt=absvalue)
+tmp.b <- tmp.b %>% group_by(Var2) %>% arrange(desc(value), .by_group=T)
+tmp.c <- tmp.a[rownames(tmp.a) %in% tmp.b$Var1,]
+names(tmp.c) <- gsub("X","F", names(tmp.c))
+# Heatmap(tmp.c, column_order = paste0("F", 1:8), row_order = as.character(tmp.b$Var1), cell_fun = function(j, i, x, y, width, height, fill) {
+#         grid.text(ifelse(abs(tmp.c[i, j])>=min(tmp.b$absvalue), "*", ""), x, y, gp = gpar(fontsize = 10))
+# }, row_names_max_width = unit(5, units="inch"))
+tmp.d <- data.frame(
+  ID = rownames(tmp.c),
+  factorup = colnames(tmp.c)[apply(tmp.c, 1, which.max)],
+factordown = colnames(tmp.c)[apply(tmp.c, 1, which.min)],
+up = apply(tmp.c, 1, max),
+down = apply(tmp.c, 1, min)
+)
+
+tmp.d$ID2 <- stringr::word(tmp.d$ID, 1, sep = " ")
+
+
+test <- presto::wilcoxauc(tmp.c %>% t(), tmp.d$ID2[match(rownames(tmp.c), tmp.d$ID)])
+
+test$sig <- ifelse(test$pval <= 0.05, T, F)
+test$log10p <- -log10(test$pval) * sign(test$logFC)
+tmp <- min(abs(min(test$log10p[test$log10p < 0])), abs(max(test$log10p[test$log10p > 0])))
+tmp <- 5
+test$log10p[test$log10p > tmp] <- tmp
+test$log10p[test$log10p < -tmp] <- -tmp
+p1 <- ggplot(data = test, aes(x = group, y = feature)) + 
+    geom_point(aes(stroke=sig,  size= 4, fill = log10p), pch=21) +
+    # geom_point(aes(stroke=sig,  color= `logFC`, size = log10p)) +
+    scale_fill_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    # scale_color_gradient2(low = "blue",mid = "white", high = "red", midpoint = 0) +
+    theme_bw() + 
+    ylab("") + 
+    xlab("") + scale_shape_binned()+
+    ggtitle("enrichment analysis")+ rotate_x_text(90) # + facet_wrap(~clust, nrow=1) 
+  # geom_point(aes(size= ifelse(sig, setsize, 0), ))
+print(p1)
+metabo.factors <- tmp.d
+metabo.factors$factor <- ifelse(abs(metabo.factors$up) > abs(metabo.factors$down), metabo.factors$factorup, metabo.factors$factordown)
+
+metabo.factors$factorupdown <- ifelse(abs(metabo.factors$up) > abs(metabo.factors$down),
+                                      paste0(metabo.factors$factorup, "+"), 
+                                             paste0(metabo.factors$factordown, "-"))
+
+table(metabo.factors$factor)
+```
+
+
+
+```{r, fig.height=10, fig.width=10}
+
+test <- presto::wilcoxauc(cptac.metabo, snf_clustering$clust[match(word(colnames(cptac.metabo), 1, 2, sep = "[.]"), snf_clustering$ID)])
+# test%>% dplyr::filter(grepl("ATP", feature)) %>% arrange(desc(logFC))
+test$sig <- ifelse(test$pval < 0.05, T, F)
+test$log10p <- -log10(test$pval) 
+test$factor <- metabo.factors$factor[match(test$feature, metabo.factors$ID)]
+
+for(i in 1:8){
+  print(ggplot(test %>% dplyr::filter(group == i)%>% dplyr::filter(!is.na(factor)), aes(x=logFC, y=log10p, label=feature, color=factor)) + geom_point() + ggrepel::geom_text_repel(max.overlaps = 30) + ggpubr::theme_pubr() + labs(title = sprintf("C%s differences by factor", i)))
+}
+# + scale_fill_manual(values=brewer.pal(7, "Set2")) + facet_wrap(~factor,nrow=2,ncol=4)
+```
+
+```{r, fig.height=10, fig.width=10}
+
+test <- presto::wilcoxauc(cptac.metabo, primitive_committed$Classification[match(word(colnames(cptac.metabo), 1, 2, sep = "[.]"), primitive_committed$ID)])
+# test%>% dplyr::filter(grepl("ATP", feature)) %>% arrange(desc(logFC))
+test$sig <- ifelse(test$pval < 0.05, T, F)
+test$log10p <- -log10(test$pval) 
+test$factor <- metabo.factors$factor[match(test$feature, metabo.factors$ID)]
+
+tmp2 <- test %>% dplyr::filter(group == "Committed")
+
+
+ggplot(tmp2%>% dplyr::filter(!is.na(factor)), aes(x=logFC, y=log10p, label=feature, color=factor)) + geom_point() + ggrepel::geom_text_repel(max.overlaps = 30) + ggpubr::theme_pubr() + labs(title = "Committed differences by factor")
+
+# + scale_fill_manual(values=brewer.pal(7, "Set2")) + facet_wrap(~factor,nrow=2,ncol=4)
+```
+
+
+```{r, fig.height=5, fig.width=5}
+tmp <- cptac.prot.ratio["CLPP",] %>% t() %>% data.frame() %>% mutate(clust = snf_clustering$clust[match(rownames(.), snf_clustering$ID)])
+
+ggboxplot(tmp, x="clust", y="CLPP", add="jitter") + stat_compare_means(comparisons = list(c(1,2), c(3,2), c(4,2), c(5,2), c(6,2), c(7,2), c(8,2))) + labs(title = "CLPP protein expression")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
